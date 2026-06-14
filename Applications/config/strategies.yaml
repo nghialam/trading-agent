@@ -1,0 +1,39 @@
+# Strategy Configuration for Autonomous Trading Agent
+# vnstock-based trading strategies
+
+strategies:
+  # Available strategies
+  - name: rsi_macd
+    enabled: true
+    parameters:
+      rsi_period: 14
+      rsi_overbought: 70
+      rsi_oversold: 30
+      macd_fast: 12
+      macd_slow: 26
+      macd_signal: 9
+
+execution:
+  # Execution API configuration
+  execution_url: "https://api.broker.com/v1/orders"
+  api_key: ""  # Set your API key
+  secret_key: ""  # Set your secret key
+  
+  # Retry settings
+  max_retries: 3
+  retry_delay: 1.0
+  timeout: 10
+  
+  # Circuit breaker
+  circuit_breaker_threshold: 5
+
+general:
+  # General settings
+  symbol: "VNM"  # Default symbol
+  log_level: "INFO"
+  
+  # Cooldown between signals (seconds)
+  cooldown_seconds: 60
+  
+  # Minimum confidence to act on signal
+  min_confidence: 0.5
