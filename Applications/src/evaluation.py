@@ -1,6 +1,6 @@
 """
 Evaluation Engine
-Computes technical indicators using vnstock_ta
+Computes technical indicators using pandas-ta / technical_indicators
 """
 
 import logging
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class EvaluationEngine:
     """
     Computes technical indicators from raw market data
-    Uses vnstock_ta for Vietnamese stock market analysis
+    Uses technical_indicators module for Vietnamese stock market analysis
     """
 
     def __init__(self, symbol: str):
@@ -57,57 +57,43 @@ class EvaluationEngine:
             DataFrame with added indicators
         """
         try:
-            # Try to use vnstock_ta if available
-            return self._compute_with_vnstock_ta(df)
+            # Use the technical_indicators module (pandas-ta compatible)
+            return self._compute_with_technical_indicators(df)
         except ImportError:
-            logger.warning("vnstock_ta not installed. Using fallback indicators.")
-            return self._compute_fallback_indicators(df)
+            logger.warning("technical_indicators not available. Using minimal indicators.")
+            return self._compute_minimal_indicators(df)
 
-    def _compute_with_vnstock_ta(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Compute indicators using vnstock_ta"""
-        from vnstock_ta import RSI as ta_rsi
-        from vnstock_ta import MACD as ta_macd
+    def _compute_with_technical_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Compute indicators using technical_indicators module"""
+        from src.technical_indicators import Indicators
+        
+        indicator = Indicators(df)
         
         # RSI (14 period)
-        df['RSI'] = ta_rsi(df['close'], timeperiod=14)
+        df['RSI'] = indicator.rsi(length=14)
         
         # MACD
-        macd_line, signal_line, histogram = ta_macd(
-            df['close'], 
-            fastperiod=12, 
-            slowperiod=26, 
-            signalperiod=9
-        )
-        df['MACD'] = macd_line
-        df['MACD_Signal'] = signal_line
-        df['MACD_Hist'] = histogram
+        macd_df = indicator.macd(fastperiod=12, slowperiod=26, signalperiod=9)
+        df['MACD'] = macd_df['MACD']
+        df['MACD_Signal'] = macd_df['MACD_Signal']
+        df['MACD_Hist'] = macd_df['MACD_Hist']
         
         # Bollinger Bands (20 period)
-        from vnstock_ta import BBANDS as ta_bbands
-        upper, middle, lower = ta_bbands(
-            df['close'], 
-            timeperiod=20, 
-            nbdevup=2, 
-            nbdevdn=2, 
-            matype=0
-        )
-        df['BB_Upper'] = upper
-        df['BB_Middle'] = middle
-        df['BB_Lower'] = lower
+        bbands_df = indicator.bbands(length=20, std=2.0)
+        df['BB_Upper'] = bbands_df['BB_UPPER']
+        df['BB_Middle'] = bbands_df['BB_MIDDLE']
+        df['BB_Lower'] = bbands_df['BB_LOWER']
         
         # EMA (12 and 26 periods)
-        from vnstock_ta import EMA as ta_ema
-        df['EMA_12'] = ta_ema(df['close'], timeperiod=12)
-        df['EMA_26'] = ta_ema(df['close'], timeperiod=26)
+        df['EMA_12'] = indicator.ema(period=12)
+        df['EMA_26'] = indicator.ema(period=26)
         
         # ATR (14 period)
-        from vnstock_ta import ATR as ta_atr
-        df['ATR'] = ta_atr(df['high'], df['low'], df['close'], timeperiod=14)
+        df['ATR'] = indicator.atr(length=14)
         
         # SMA (20 and 50 periods)
-        from vnstock_ta import SMA as ta_sma
-        df['SMA_20'] = ta_sma(df['close'], timeperiod=20)
-        df['SMA_50'] = ta_sma(df['close'], timeperiod=50)
+        df['SMA_20'] = indicator.sma(length=20)
+        df['SMA_50'] = indicator.sma(length=50)
         
         self.indicators = {
             'RSI': df['RSI'],
@@ -126,11 +112,11 @@ class EvaluationEngine:
         
         return df
 
-    def _compute_fallback_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Compute fallback indicators using pandas/numpy if vnstock_ta is not available"""
-        logger.info("Using fallback indicator calculation")
+    def _compute_minimal_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Compute minimal indicators using only pandas/numpy"""
+        logger.info("Using minimal indicator calculation")
         
-        # Simple RSI approximation using rolling statistics (avoid division by zero)
+        # Simple RSI approximation
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -154,7 +140,6 @@ class EvaluationEngine:
         df['BB_Lower'] = df['close'] * 0.98
         df['ATR'] = df['high'] - df['low']
         
-        # Update indicators dict for fallback
         self.indicators = {
             'RSI': df['RSI'],
             'MACD': df['MACD'],
