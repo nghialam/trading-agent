@@ -327,6 +327,8 @@ docker-compose down
 - [System Architecture](docs/SYSTEM_ARCHITECTURE.md) — System overview, component diagrams, technology stack
 - [API Reference](docs/API_REFERENCE.md) — Complete API reference for all classes and methods
 - [Module Specifications](docs/MODULE_SPECIFICATIONS.md) — Detailed module specs with design patterns
+- [Daily Maintenance](DAILY_MAINTENANCE.md) — Daily/weekly/monthly maintenance checklists
+- [Troubleshooting](TROUBLESHOOTING.md) — Common issues, monitoring commands, emergency procedures
 
 ## 📝 License
 

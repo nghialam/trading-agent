@@ -27,10 +27,10 @@ class ScannerService:
     Main scanner service that monitors stocks and generates trading signals.
 
     Features:
-    - Multi-threaded scanning for watchlist
-    - Priority-based update frequency (VN30 high priority)
-    - Automated error recovery with retry logic
-    - Real-time configuration reload
+      - Multi-threaded scanning for watchlist
+      - Priority-based update frequency (VN30 high priority)
+      - Automated error recovery with retry logic
+      - Real-time configuration reload
     """
 
     def __init__(self, max_workers: int = 10):
@@ -42,9 +42,9 @@ class ScannerService:
         self._lock = threading.Lock()
 
         # Scanner parameters (reloadable)
-        self.scan_interval_seconds = 30  # Default scan interval
-        self.high_priority_interval = 10  # VN30 stocks
-        self.low_priority_interval = 60  # Other stocks
+        self.scan_interval_seconds = 30     # Default scan interval
+        self.high_priority_interval = 10    # VN30 stocks
+        self.low_priority_interval = 60    # Other stocks
 
         logger.info(f"ScannerService initialized with {max_workers} workers")
 
@@ -80,12 +80,12 @@ class ScannerService:
         """
         symbol = stock.symbol
         try:
-            # Fetch historical data
+            # Fetch historical data - use 90 days to ensure >= 50 trading bars
             logger.debug(f"Fetching data for {symbol}...")
-            df = self._fetch_historical_data(symbol, days=30)
+            df = self._fetch_historical_data(symbol, days=90)
 
             if df.empty or len(df) < 50:
-                logger.warning(f"Insufficient data for {symbol}")
+                logger.warning(f"Insufficient data for {symbol}: {len(df)} bars (need >= 50)")
                 return
 
             # Compute indicators
@@ -125,7 +125,7 @@ class ScannerService:
             logger.error(f"Error scanning {symbol}: {str(e)}")
             self._log_error(symbol=symbol, error=str(e))
 
-    def _fetch_historical_data(self, symbol: str, days: int = 30) -> pd.DataFrame:
+    def _fetch_historical_data(self, symbol: str, days: int = 90) -> pd.DataFrame:
         """Fetch historical OHLCV data from vnstock"""
         try:
             # Using vnstock API
@@ -175,15 +175,15 @@ class ScannerService:
         if rsi < 30 and macd > macd_signal:
             # Oversold + MACD crossover -> BUY
             signal_type = "BUY"
-            confidence = 0.5 + (30 - rsi) / 100  # Higher when more oversold
+            confidence = 0.5 + (30 - rsi) / 100    # Higher when more oversold
         elif rsi > 70 and macd < macd_signal:
             # Overbought + MACD reverse crossover -> SELL
             signal_type = "SELL"
-            confidence = 0.5 + (rsi - 70) / 100  # Higher when more overbought
+            confidence = 0.5 + (rsi - 70) / 100    # Higher when more overbought
         else:
             # Neutral
             signal_type = "HOLD"
-            confidence = abs(rsi - 50) / 100  # Closer to 50 = lower confidence
+            confidence = abs(rsi - 50) / 100    # Closer to 50 = lower confidence
 
         # Cap confidence at 95%
         confidence = min(confidence, 0.95)
@@ -198,16 +198,36 @@ class ScannerService:
         price_at_signal: float,
         indicators: Dict
     ):
-        """Save trading signal to database"""
+        """Save trading signal to database - converts numpy types to native Python types"""
+        
+        # Convert numpy floats to native Python floats for PostgreSQL compatibility
+        try:
+            confidence = float(confidence_score) if isinstance(confidence_score, (float,)) else confidence_score
+            price = float(price_at_signal) if isinstance(price_at_signal, (float,)) else price_at_signal
+        except (ValueError, TypeError):
+            confidence = 0.0
+            price = 0.0
+        
+        # Convert numpy values in indicators dict to native Python types
+        clean_indicators = {}
+        for k, v in (indicators or {}).items():
+            if isinstance(v, bool):
+                clean_indicators[k] = bool(v)
+            else:
+                try:
+                    clean_indicators[k] = float(v)
+                except (ValueError, TypeError):
+                    clean_indicators[k] = v
+        
         db = SessionLocal()
         try:
             signal = Signal(
                 symbol=symbol,
                 timestamp=datetime.utcnow(),
                 signal_type=signal_type,
-                confidence_score=confidence_score,
-                price_at_signal=price_at_signal,
-                indicators=indicators,
+                confidence_score=confidence,
+                price_at_signal=price,
+                indicators=clean_indicators,
                 metadata={'source': 'scanner_service'}
             )
             db.add(signal)
@@ -254,7 +274,12 @@ class ScannerService:
         """
         Main scanner loop.
         Runs continuously, scanning all watchlist stocks.
+        This method blocks until stop() is called.
         """
+        if self.running:
+            logger.warning("Scanner already running")
+            return
+
         self.running = True
         logger.info("Scanner service started")
 
@@ -262,8 +287,12 @@ class ScannerService:
             while self.running:
                 start_time = time.time()
 
-                # Reload config periodically
-                self.reload_config()
+                # Reload config periodically (every 5 minutes)
+                if not hasattr(self, '_last_config_reload'):
+                    self._last_config_reload = 0
+                if time.time() - self._last_config_reload > 300:
+                    self.reload_config()
+                    self._last_config_reload = time.time()
 
                 # Load watchlist
                 db = SessionLocal()
@@ -302,11 +331,23 @@ class ScannerService:
         finally:
             self.stop()
 
+    def run_in_background_thread(self):
+        """Start the scanner in a background daemon thread (for production use)."""
+        if self.running:
+            logger.warning("Scanner already running")
+            return
+        thread = threading.Thread(target=self.run, daemon=True)
+        thread.start()
+        logger.info("Scanner service started in background thread")
+
     def stop(self):
         """Stop the scanner service"""
         self.running = False
         logger.info("Stopping scanner service...")
-        self.executor.shutdown(wait=True)
+        try:
+            self.executor.shutdown(wait=False, cancel_futures=True)
+        except Exception as e:
+            logger.error(f"Error shutting down executor: {str(e)}")
         logger.info("Scanner service stopped")
 
 
