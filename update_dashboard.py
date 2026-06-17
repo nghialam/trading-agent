@@ -1,4 +1,18 @@
-# ============================================================================
+#!/usr/bin/env python3
+"""Helper script to update dashboard/app.py with improved watchlist_page."""
+
+with open('dashboard/app.py', 'r') as f:
+    content = f.read()
+
+# Find the start and end markers
+start_marker = "# ============================================================================\n# PAGE: WATCHLIST\n# ============================================================================\n"
+end_marker = "\n\n# ============================================================================\n# MAIN APP LOGIC\n# ============================================================================\n"
+
+start_idx = content.find(start_marker)
+end_idx = content.find(end_marker, start_idx)
+
+if start_idx != -1 and end_idx != -1:
+    new_content = """# ============================================================================
 # PAGE: WATCHLIST
 # ============================================================================
 
@@ -148,50 +162,40 @@ def scanner_page():
     else:
         st.error("Could not fetch scanner status")
     
-    # Manual scan
-    st.subheader("Manual Scan")
-    col1, col2 = st.columns(2)
-    with col1:
-        scan_symbol = st.text_input("Symbol", "VNM")
-    with col2:
-        if st.button("Scan Now"):
-            result = post_data(f"/api/scanner/scan/{scan_symbol}")
-            if result:
-                st.info(result.get("message"))
+         # Manual scan
+        st.subheader("Manual Scan")
+        col1, col2 = st.columns(2)
+        with col1:
+            scan_symbol = st.text_input("Symbol", "VNM")
+        with col2:
+            if st.button("Scan Now"):
+                result = post_data(f"/api/scanner/scan/{scan_symbol}")
+                if result:
+                    st.info(result.get("message"))
     
-    # Scanner logs
-    st.subheader("Scanner Logs")
-    log_level = st.selectbox("Log Level", ["All", "INFO", "WARNING", "ERROR"])
-    limit = st.slider("Limit", 10, 100, 50)
+         # Scanner logs
+        st.subheader("Scanner Logs")
+        log_level = st.selectbox("Log Level", ["All", "INFO", "WARNING", "ERROR"])
+        limit = st.slider("Limit", 10, 100, 50)
+        
+        params = {"limit": limit}
+        if log_level != "All":
+            params["level"] = log_level
+        
+        logs = fetch_data("/api/scanner/logs", params)
+        if logs:
+            df = pd.DataFrame(logs)
+            if not df.empty:
+                st.dataframe(df, use_container_width=True)
+            else:
+                st.info("No logs found")
+
+
+""" + content[end_idx:]
+
+    with open('dashboard/app.py', 'w') as f:
+        f.write(new_content)
     
-    params = {"limit": limit}
-    if log_level != "All":
-        params["level"] = log_level
-    
-    logs = fetch_data("/api/scanner/logs", params)
-    if logs:
-        df = pd.DataFrame(logs)
-        if not df.empty:
-            st.dataframe(df, use_container_width=True)
-        else:
-            st.info("No logs found")
-
-# ============================================================================
-# MAIN APP LOGIC
-# ============================================================================
-
-if page == "📊 Signals":
-    signals_page()
-elif page == "👥 Watchlist":
-    watchlist_page()
-elif page == "🔍 Scanner":
-    scanner_page()
-elif page == "📈 Analytics":
-    analytics_page()
-elif page == "⚙️ Config":
-    config_page()
-
-# Auto-refresh
-if auto_refresh and refresh_interval:
-    time.sleep(refresh_interval)
-    st.rerun()
+    print("✅ Successfully updated dashboard/app.py")
+else:
+    print(f"❌ Could not find markers. start_idx={start_idx}, end_idx={end_idx}")
