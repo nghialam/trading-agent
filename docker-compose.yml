@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+     # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: trading-postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-trading_user}
+      POSTGRES_PASSWORD: ${DB_PASS:-trading_pass}
+      POSTGRES_DB: ${DB_NAME:-trading_agent}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-trading_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+     # FastAPI Backend
+  api:
+    build: .
+    container_name: trading-api
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --workers 2
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-trading_user}:${DB_PASS:-trading_pass}@postgres:5432/${DB_NAME:-trading_agent}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+     # Streamlit Dashboard
+  dashboard:
+    build: .
+    container_name: trading-dashboard
+    command: streamlit run dashboard/app.py --server.port 8501 --server.headless true
+    ports:
+      - "8501:8501"
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-trading_user}:${DB_PASS:-trading_pass}@postgres:5432/${DB_NAME:-trading_agent}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

@@ -23,5 +23,19 @@ tabulate>=0.9.0
 pytest-cov>=4.1.0
 black>=23.7.0
 flake8>=6.1.0
+
 # Technical Analysis (alternative to vnstock_ta)
 pandas-ta>=0.3.0
+
+# Database
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
+
+# FastAPI Backend
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+pydantic>=2.0.0
+
+# Streamlit Dashboard
+streamlit>=1.28.0
+plotly>=5.15.0
