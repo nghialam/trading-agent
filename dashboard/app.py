@@ -216,34 +216,59 @@ def watchlist_page():
                     st.session_state.watchlist_data = fetch_data("/api/watchlist/")
                     st.rerun()
             with col4:
-                st.button("📊 View Chart", key=f"chart_{symbol}")
-    else:
-        st.info("📋 Your watchlist is empty. Add stocks above to start monitoring.")
-
-
-# ============================================================================
-# PAGE: SCANNER
-# ============================================================================
-
-def scanner_page():
-    st.header("🔍 Scanner Control")
+                if st.button("📊 View Chart", key=f"chart_{symbol}"):
+                    st.session_state.selected_chart_symbol = symbol
+                    st.rerun()
     
-         # Scanner status metrics
-    status = fetch_data("/api/scanner/status")
-    if status:
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Running", "Yes" if status.get("scanner_running") else "No")
-        with col2:
-            st.metric("Enabled Stocks", status.get("total_enabled_stocks", 0))
-        with col3:
-            st.metric("Signals (1h)", status.get("signals_last_hour", 0))
-        with col4:
-            st.metric("Errors (1h)", status.get("errors_last_hour", 0))
-        
-             # Control buttons
-        st.subheader("Controls")
-        col1, col2 = st.columns(2)
+          # Display chart for selected stock
+        if 'selected_chart_symbol' in st.session_state and st.session_state.selected_chart_symbol:
+            st.subheader(f"📈 Price Chart - {st.session_state.selected_chart_symbol}")
+            
+             # Fetch historical data
+            try:
+                import requests
+                history_url = f"{API_BASE_URL}/api/stocks/history?symbol={st.session_state.selected_chart_symbol}&days=30"
+                response = requests.get(history_url, timeout=10)
+                if response.status_code == 200:
+                    chart_data = response.json().get('data', [])
+                    if chart_data:
+                         # Convert to DataFrame
+                        df_chart = pd.DataFrame(chart_data)
+                        
+                         # Plotly candlestick chart
+                        fig = go.Figure()
+                        
+                        fig.add_trace(go.Candlestick(
+                            x=df_chart['time'],
+                            open=df_chart['open'],
+                            high=df_chart['high'],
+                            low=df_chart['low'],
+                            close=df_chart['close'],
+                         ))
+                        
+                        fig.update_layout(
+                            title=f"{st.session_state.selected_chart_symbol} - Last 30 Days",
+                            xaxis_title="Date",
+                            yaxis_title="Price (VND)",
+                            template="plotly_white",
+                            height=500
+                         )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                         # Add close button
+                        if st.button("❌ Close Chart"):
+                            del st.session_state.selected_chart_symbol
+                            st.rerun()
+                    else:
+                        st.warning(f"No price data available for {st.session_state.selected_chart_symbol}")
+                else:
+                    st.error(f"Failed to fetch chart data: {response.status_code}")
+            except Exception as e:
+                st.error(f"Error fetching chart data: {str(e)}")
+        else:
+            st.info("💡 Click '📊 View Chart' button next to any stock to view its price history")
+    
         with col1:
             if st.button("Start Scanner", type="primary"):
                 result = post_data("/api/scanner/start")
