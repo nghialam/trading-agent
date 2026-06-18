@@ -348,6 +348,13 @@ class ScannerService:
             self.executor.shutdown(wait=False, cancel_futures=True)
         except Exception as e:
             logger.error(f"Error shutting down executor: {str(e)}")
+
+    def restart(self):
+        """Restart the scanner with a fresh executor"""
+        self.stop()
+        self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
+        self.running = True
+        logger.info("Scanner restarted with fresh executor")
         logger.info("Scanner service stopped")
 
 

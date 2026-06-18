@@ -86,7 +86,7 @@ class Signal(Base):
     indicators = Column(JSON, nullable=True)                                  # RSI, MACD, BB data
     
     # Additional metadata (extensible)
-    extra_metadata = Column('metadata', JSON, nullable=True)                   # Custom fields
+    extra_metadata = Column('extra_meta', JSON, nullable=True)                    # Custom fields
     
     # Processing status
     processed = Column(Boolean, default=False, nullable=False)               # Mark when processed

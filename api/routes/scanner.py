@@ -76,6 +76,21 @@ def stop_scanning(db: Session = Depends(get_db)):
     return {"message": "Scanner service stopped", "scanner_running": False}
 
 
+@router.post("/restart")
+def restart_scanning(db: Session = Depends(get_db)):
+    """Restart scanner service with fresh executor"""
+    global _scanner_running
+    if _scanner_running:
+        stop_scanning(db)
+    
+    from services.scanner import get_scanner
+    scanner = get_scanner()
+    scanner.restart()
+    _scanner_running = True
+    
+    return {"message": "Scanner service restarted", "scanner_running": True}
+
+
 @router.post("/scan/{symbol}")
 def scan_single_stock(symbol: str, db: Session = Depends(get_db)):
     """Manually trigger a scan for a single stock"""
