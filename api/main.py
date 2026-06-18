@@ -70,9 +70,10 @@ def root():
 
 
 # Import routes after app is defined
-from api.routes import signals, watchlist, scanner, stocks   # noqa: E402
+from api.routes import signals, watchlist, scanner, stocks, curated_signals  # noqa: E402
 
 app.include_router(signals.router, prefix="/api")
 app.include_router(watchlist.router, prefix="/api")
 app.include_router(scanner.router, prefix="/api")
 app.include_router(stocks.router, prefix="/api")
+app.include_router(curated_signals.router)  # No prefix - routes already include /curated-signals

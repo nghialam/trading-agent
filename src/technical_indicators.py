@@ -367,6 +367,71 @@ class Indicators:
         
         print("\n" + "=" * 70)
 
+# -------------------------------------------------------------------------
+# Pocket Pivot Indicator (for position determination)
+# -------------------------------------------------------------------------
 
-# Aliases for vnstock_ta compatibility
-Indicator = Indicators
+def pocket_pivot(data: pd.DataFrame, lookback: int = 5) -> dict:
+    """
+    Pocket Pivot Indicator for identifying bullish and bearish pivots.
+    
+    A bullish pocket pivot occurs when:
+      - Current close > previous high
+      - Volume is above average
+      - Price breaks out of a consolidation pocket
+    
+    A bearish pocket pivot occurs when:
+      - Current close < previous low
+      - Volume is above average
+      - Price breaks down from consolidation
+    
+    Args:
+        data: DataFrame with OHLCV data
+        lookback: Number of bars to look back for pivot detection
+        
+    Returns:
+        Dictionary with pivot summary
+    """
+    if data.empty or len(data) < 2:
+        return {'pivot_type': 'NONE', 'volume_ratio': 0.0, 'is_valid': False}
+    
+    close = data['close']
+    high = data['high']
+    low = data['low']
+    volume = data['volume']
+    
+    # Calculate volume average
+    vol_avg = volume.rolling(window=lookback).mean()
+    
+    # Previous day's high and low
+    prev_high = high.shift(1)
+    prev_low = low.shift(1)
+    
+    # Detect bullish pivot: close > previous high AND volume above average
+    is_bullish = (close > prev_high) & (volume > vol_avg * 1.5)
+    
+    # Detect bearish pivot: close < previous low AND volume above average
+    is_bearish = (close < prev_low) & (volume > vol_avg * 1.5)
+    
+    # Volume ratio for context
+    vol_ratio = volume / vol_avg.replace(0, 1)
+    
+    # Get latest values
+    latest_idx = len(data) - 1
+    pivot_type = 'NONE'
+    is_valid = False
+    
+    if is_bullish.iloc[latest_idx]:
+        pivot_type = 'BULLISH_PIVOT'
+        is_valid = vol_ratio.iloc[latest_idx] > 1.2
+    elif is_bearish.iloc[latest_idx]:
+        pivot_type = 'BEARISH_PIVOT'
+        is_valid = vol_ratio.iloc[latest_idx] > 1.2
+    
+    return {
+        'pivot_type': pivot_type,
+        'volume_ratio': round(float(vol_ratio.iloc[latest_idx]), 2),
+        'is_valid': bool(is_valid),
+        'is_bullish': bool(is_bullish.iloc[latest_idx]),
+        'is_bearish': bool(is_bearish.iloc[latest_idx])
+    }

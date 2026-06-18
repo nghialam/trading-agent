@@ -44,5 +44,8 @@ def get_db():
 
 def init_db():
     """Initialize database schema"""
+      # Import all models to ensure they're registered with SQLAlchemy
+    from database.models import SignalReview, DailySummary, PocketPivotData  # noqa: F401
+    
     Base.metadata.create_all(bind=engine)
     print("Database initialized successfully")

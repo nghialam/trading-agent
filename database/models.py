@@ -19,15 +19,14 @@ class Watchlist(Base):
     __tablename__ = "watchlist"
 
     id = Column(Integer, primary_key=True, index=True)
-    symbol = Column(String(20), unique=True, nullable=False, index=True)   # e.g., "VNM", "VCB"
-    name = Column(String(100), nullable=True)                                # Company name
-    sector = Column(String(50), nullable=True)                               # Sector classification
-    priority = Column(Integer, default=1, nullable=False)                   # 1=high (VN30), 2=medium, 3=low
-    enabled = Column(Boolean, default=True, nullable=False)                 # Enable/disable monitoring
+    symbol = Column(String(20), unique=True, nullable=False, index=True)
+    name = Column(String(100), nullable=True)
+    sector = Column(String(50), nullable=True)
+    priority = Column(Integer, default=1, nullable=False)
+    enabled = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
-    # Relationships
     signals = relationship("Signal", back_populates="watchlist", cascade="all, delete-orphan")
     price_data = relationship("PriceData", back_populates="watchlist", cascade="all, delete-orphan")
 
@@ -49,14 +48,13 @@ class PriceData(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String(20), ForeignKey("watchlist.symbol"), nullable=False, index=True)
-    timestamp = Column(DateTime, nullable=False, index=True)                 # Bar timestamp
+    timestamp = Column(DateTime, nullable=False, index=True)
     open_price = Column(Float, nullable=False)
     high_price = Column(Float, nullable=False)
     low_price = Column(Float, nullable=False)
     close_price = Column(Float, nullable=False)
     volume = Column(Float, nullable=False)
     
-    # Relationships
     watchlist = relationship("Watchlist", back_populates="price_data")
 
     __table_args__ = (
@@ -72,31 +70,27 @@ class Signal(Base):
     """
     Trading signals with full metadata
     Normalized schema for extensibility
-     """
+    """
     __tablename__ = "signals"
 
     id = Column(Integer, primary_key=True, index=True)
     symbol = Column(String(20), ForeignKey("watchlist.symbol"), nullable=False, index=True)
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    signal_type = Column(String(20), nullable=False)                         # BUY, SELL, HOLD
-    confidence_score = Column(Float, nullable=False)                         # 0.0 - 1.0
-    price_at_signal = Column(Float, nullable=True)                           # Stock price when signal generated
+    signal_type = Column(String(20), nullable=False)
+    confidence_score = Column(Float, nullable=False)
+    price_at_signal = Column(Float, nullable=True)
     
-    # Technical indicator snapshot (JSON for flexibility)
-    indicators = Column(JSON, nullable=True)                                  # RSI, MACD, BB data
+    indicators = Column(JSON, nullable=True)
     
-    # Additional metadata (extensible)
-    extra_metadata = Column('extra_meta', JSON, nullable=True)                    # Custom fields
+    extra_metadata = Column('extra_meta', JSON, nullable=True)
     
-    # Processing status
-    processed = Column(Boolean, default=False, nullable=False)               # Mark when processed
-    processed_at = Column(DateTime, nullable=True)                            # When processed
+    processed = Column(Boolean, default=False, nullable=False)
+    processed_at = Column(DateTime, nullable=True)
     
-    # Error tracking
-    error_message = Column(String(500), nullable=True)                        # Last error if any
+    error_message = Column(String(500), nullable=True)
     
-    # Relationships
     watchlist = relationship("Watchlist", back_populates="signals")
+    review = relationship("SignalReview", back_populates="signal")
 
     __table_args__ = (
         Index('idx_signal_symbol_time', 'symbol', 'timestamp'),
@@ -113,15 +107,15 @@ class SystemLog(Base):
     """
     System activity log
     Tracks scanner operations, errors, and health
-     """
+    """
     __tablename__ = "system_log"
 
     id = Column(Integer, primary_key=True, index=True)
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    level = Column(String(10), nullable=False)                                 # INFO, WARNING, ERROR
-    component = Column(String(50), nullable=False)                             # scanner, api, dashboard
+    level = Column(String(10), nullable=False)
+    component = Column(String(50), nullable=False)
     message = Column(String(1000), nullable=False)
-    details = Column(JSON, nullable=True)                                       # Additional context
+    details = Column(JSON, nullable=True)
 
     __table_args__ = (
         Index('idx_log_timestamp', 'timestamp'),
@@ -137,20 +131,109 @@ class ScannerConfig(Base):
     """
     Scanner configuration settings
     Stores runtime parameters
-     """
+    """
     __tablename__ = "scanner_config"
 
     id = Column(Integer, primary_key=True, index=True)
-    key = Column(String(50), unique=True, nullable=False)                     # Config key
-    value = Column(String(500), nullable=False)                                # Config value
-    description = Column(String(200), nullable=True)                           # Config description
+    key = Column(String(50), unique=True, nullable=False)
+    value = Column(String(500), nullable=False)
+    description = Column(String(200), nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     def __repr__(self):
         return f"<ScannerConfig(key='{self.key}', value='{self.value}')>"
 
 
-# Create indexes for common query patterns
+class SignalReview(Base):
+    """
+    Curated signal reviews with LLM analysis
+    Tracks position changes and validates signals
+    """
+    __tablename__ = "signal_reviews"
+
+    id = Column(Integer, primary_key=True, index=True)
+    signal_id = Column(Integer, ForeignKey("signals.id"), nullable=False, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    
+    previous_signal = Column(String(20), nullable=True)
+    current_signal = Column(String(20), nullable=False)
+    is_position_change = Column(Boolean, default=False, nullable=False)
+    
+    llm_analysis = Column(JSON, nullable=True)
+    llm_verdict = Column(String(20), nullable=True)
+    llm_confidence = Column(Float, nullable=True)
+    analysis_notes = Column(String(2000), nullable=True)
+    
+    signal = relationship("Signal", back_populates="review")
+
+    __table_args__ = (
+        Index('idx_review_symbol_time', 'symbol', 'timestamp'),
+        Index('idx_review_verdict', 'llm_verdict'),
+        Index('idx_review_position_change', 'is_position_change'),
+    )
+
+    def __repr__(self):
+        return f"<SignalReview(symbol='{self.symbol}', verdict='{self.llm_verdict}', change={self.is_position_change})>"
+
+
+class DailySummary(Base):
+    """
+    Daily trading summary and notes
+    Captures notable events and lessons for future reference
+    """
+    __tablename__ = "daily_summaries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    date = Column(DateTime, unique=True, nullable=False, index=True)
+    symbol = Column(String(20), nullable=True, index=True)
+    
+    summary_text = Column(String(5000), nullable=True)
+    notable_events = Column(JSON, nullable=True)
+    trading_notes = Column(String(3000), nullable=True)
+    
+    market_conditions = Column(JSON, nullable=True)
+    volume_analysis = Column(JSON, nullable=True)
+
+    __table_args__ = (
+        Index('idx_summary_date', 'date'),
+        Index('idx_summary_symbol', 'symbol'),
+    )
+
+    def __repr__(self):
+        return f"<DailySummary(date='{self.date}', symbol='{self.symbol}')>"
+
+
+class PocketPivotData(Base):
+    """
+    Pocket Pivot indicator data (1h timeframe)
+    Tracks pivot points for position determination
+    """
+    __tablename__ = "pocket_pivot_data"
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    
+    pivot_type = Column(String(20), nullable=True)
+    pivot_price = Column(Float, nullable=True)
+    volume_ratio = Column(Float, nullable=True)
+    is_valid = Column(Boolean, default=False, nullable=False)
+    
+    previous_high = Column(Float, nullable=True)
+    previous_low = Column(Float, nullable=True)
+    context_data = Column(JSON, nullable=True)
+
+    __table_args__ = (
+        Index('idx_pivot_symbol_time', 'symbol', 'timestamp'),
+        Index('idx_pivot_valid', 'is_valid'),
+        Index('idx_pivot_type', 'pivot_type'),
+    )
+
+    def __repr__(self):
+        return f"<PocketPivotData(symbol='{self.symbol}', type='{self.pivot_type}')>"
+
+
 def create_indexes():
     """Create additional indexes for performance"""
     from database.config import engine
