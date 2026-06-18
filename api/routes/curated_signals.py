@@ -24,15 +24,15 @@ def get_curated_signals(
     limit: int = Query(20, ge=1, le=100, description="Number of results"),
     offset: int = Query(0, ge=0, description="Offset for pagination")
 ):
-      """
+    """
     Get curated signals with LLM analysis.
     
     Returns signals that have been analyzed by LLM, focusing on 
     position changes (HOLD -> BUY/SELL) and qualified signals.
-       """
+    """
     query = db.query(SignalReview)
     
-     # Apply filters
+    # Apply filters
     if symbol:
         query = query.filter(SignalReview.symbol == symbol.upper())
     if verdict:
@@ -40,15 +40,15 @@ def get_curated_signals(
     if is_position_change is not None:
         query = query.filter(SignalReview.is_position_change == is_position_change)
     
-      # Order by timestamp descending
+    # Order by timestamp descending
     reviews = (
         query.order_by(desc(SignalReview.timestamp))
-        .offset(offset)
-        .limit(limit)
-        .all()
+            .offset(offset)
+            .limit(limit)
+            .all()
     )
     
-     # Build response
+    # Build response
     result = []
     for review in reviews:
         result.append({
@@ -78,12 +78,12 @@ def get_position_changes(
     symbol: Optional[str] = Query(None, description="Filter by stock symbol"),
     limit: int = Query(10, ge=1, le=50, description="Number of results")
 ):
-      """
+    """
     Get only signals where position changed (HOLD -> BUY/SELL).
     
     This is the most curated list - signals that represent actual
     trading opportunities based on LLM verification.
-       """
+    """
     query = db.query(SignalReview).filter(
         SignalReview.is_position_change == True
     )
@@ -93,8 +93,8 @@ def get_position_changes(
     
     reviews = (
         query.order_by(desc(SignalReview.timestamp))
-        .limit(limit)
-        .all()
+            .limit(limit)
+            .all()
     )
     
     result = []
@@ -124,12 +124,12 @@ def get_daily_summary(
     date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
     limit: int = Query(10, ge=1, le=100, description="Number of results")
 ):
-      """
+    """
     Get daily trading summaries with notable events.
     
     Summarizes what happened during each trading day and provides
     insights for future trading decisions.
-       """
+    """
     query = db.query(DailySummary)
     
     if symbol:
@@ -150,8 +150,8 @@ def get_daily_summary(
     
     summaries = (
         query.order_by(desc(DailySummary.date))
-        .limit(limit)
-        .all()
+            .limit(limit)
+            .all()
     )
     
     result = []
@@ -179,41 +179,41 @@ def get_market_overview(
     db: Session = Depends(get_db),
     days: int = Query(7, ge=1, le=30, description="Number of days to look back")
 ):
-      """
+    """
     Get market-wide overview for recent trading days.
     
     Aggregates summaries across all stocks to provide a 
     high-level view of market conditions.
-       """
-     # Get today's date
+    """
+    # Get today's date
     today = datetime.utcnow().date()
     from_date = today - timedelta(days=days)
     
-      # Query market-wide summaries (symbol is None)
+    # Query market-wide summaries (symbol is None)
     summaries = (
         db.query(DailySummary)
-         .filter(DailySummary.symbol == None)
-         .filter(DailySummary.date >= from_date)
-         .order_by(desc(DailySummary.date))
-         .all()
+            .filter(DailySummary.symbol == None)
+            .filter(DailySummary.date >= from_date)
+            .order_by(desc(DailySummary.date))
+            .all()
     )
     
-     # Also get per-stock summaries for key stocks
+    # Also get per-stock summaries for key stocks
     top_stocks = (
         db.query(Watchlist)
-         .filter(Watchlist.enabled == True)
-         .limit(5)
-         .all()
+            .filter(Watchlist.enabled == True)
+            .limit(5)
+            .all()
     )
     
     stock_summaries = []
     for stock in top_stocks:
         latest = (
             db.query(DailySummary)
-             .filter(DailySummary.symbol == stock.symbol)
-             .order_by(desc(DailySummary.date))
-             .first()
-         )
+                .filter(DailySummary.symbol == stock.symbol)
+                .order_by(desc(DailySummary.date))
+                .first()
+        )
         if latest:
             stock_summaries.append({
                 'symbol': stock.symbol,
@@ -221,7 +221,7 @@ def get_market_overview(
                 'summary_text': latest.summary_text,
                 'notable_events': latest.notable_events,
                 'trading_notes': latest.trading_notes
-             })
+            })
     
     return {
         'period_days': days,

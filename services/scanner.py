@@ -20,6 +20,7 @@ from database.models import (
 from database.config import SessionLocal
 from src.technical_indicators import Indicators
 from src.llm_analysis import get_llm_analyzer
+from src.telegram_notifier import get_telegram_notifier
 from vnstock import Quote
 
 
@@ -187,7 +188,7 @@ class ScannerService:
                 llm_verdict=llm_verdict
             )
 
-            # If position change detected, save curated review
+# If position change detected, save curated review and send notification
             if is_position_change:
                 self._save_signal_review(
                     symbol=symbol,
@@ -195,12 +196,26 @@ class ScannerService:
                     current_signal=signal_type,
                     llm_analysis=llm_verdict,
                     indicators={
-                        'RSI': rsi,
-                        'MACD': macd,
-                        'MACD_Signal': macd_signal
-                    }
-                )
+                         'RSI': rsi,
+                         'MACD': macd,
+                         'MACD_Signal': macd_signal
+                     }
+                 )
                 logger.info(f"POSITION CHANGE detected for {symbol}: {previous_signal} -> {signal_type}")
+                
+                # Send Telegram notification
+                try:
+                    notifier = get_telegram_notifier()
+                    notifier.send_position_change_alert(
+                        symbol=symbol,
+                        previous_signal=previous_signal,
+                        current_signal=signal_type,
+                        confidence=final_confidence,
+                        price=df_1d['close'].iloc[-1],
+                        reasoning=llm_verdict.get('reasoning', '')
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send Telegram notification for {symbol}: {str(e)}")
 
             logger.info(
                 f"Signal generated: {symbol} -> {signal_type} "
