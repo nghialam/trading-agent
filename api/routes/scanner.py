@@ -2,16 +2,24 @@
 
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, timedelta
 from database.config import get_db
 from database.models import ScannerConfig, SystemLog, Watchlist, Signal
 import threading
+import time
 
 router = APIRouter(prefix="/scanner", tags=["scanner"])
 
-# Track scanner state
+# Track scanner state and instance
 _scanner_thread: threading.Thread = None
+_scanner_instance = None
 _scanner_running = False
+
+
+def set_scanner_running(status: bool):
+    """Helper to set scanner running status from external code"""
+    global _scanner_running
+    _scanner_running = status
 
 
 @router.get("/status")
@@ -20,12 +28,13 @@ def get_scanner_status(db: Session = Depends(get_db)):
     global _scanner_running
     total_stocks = db.query(Watchlist).filter(Watchlist.enabled == True).count()
     
-    # Calculate one hour ago properly
     now = datetime.utcnow()
-    one_hour_ago = now.replace(minute=0, second=0, microsecond=0)
+    one_hour_ago = now - timedelta(hours=1)
     
     recent_signals = db.query(Signal).filter(Signal.timestamp >= one_hour_ago).count()
-    recent_errors = db.query(SystemLog).filter(SystemLog.level == "ERROR").filter(SystemLog.timestamp >= one_hour_ago).count()
+    recent_errors = db.query(SystemLog).filter(
+        SystemLog.level == "ERROR"
+    ).filter(SystemLog.timestamp >= one_hour_ago).count()
     
     return {
         "scanner_running": _scanner_running,
@@ -39,23 +48,22 @@ def get_scanner_status(db: Session = Depends(get_db)):
 @router.post("/start")
 def start_scanning(db: Session = Depends(get_db)):
     """Start scanner service"""
-    global _scanner_running
+    global _scanner_running, _scanner_thread, _scanner_instance
     if _scanner_running:
         return {"message": "Scanner already running", "scanner_running": True}
     
-    from services.scanner import get_scanner
-    scanner = get_scanner()
+    from services.scanner import ScannerService
+    _scanner_instance = ScannerService(max_workers=10)
     
-    # Start scanner in background thread
     def run_scanner():
         global _scanner_running
         try:
-            scanner.run()
+            _scanner_instance.run()
         finally:
             _scanner_running = False
-    
-    thread = threading.Thread(target=run_scanner, daemon=True)
-    thread.start()
+
+    _scanner_thread = threading.Thread(target=run_scanner, daemon=True)
+    _scanner_thread.start()
     _scanner_running = True
     
     return {"message": "Scanner service started", "scanner_running": True}
@@ -64,28 +72,38 @@ def start_scanning(db: Session = Depends(get_db)):
 @router.post("/stop")
 def stop_scanning(db: Session = Depends(get_db)):
     """Stop scanner service"""
-    global _scanner_running
+    global _scanner_running, _scanner_instance
     if not _scanner_running:
         return {"message": "Scanner already stopped", "scanner_running": False}
     
-    from services.scanner import get_scanner
-    scanner = get_scanner()
-    scanner.stop()
+    if _scanner_instance:
+        _scanner_instance.stop()
     _scanner_running = False
-    
+
     return {"message": "Scanner service stopped", "scanner_running": False}
 
 
 @router.post("/restart")
 def restart_scanning(db: Session = Depends(get_db)):
     """Restart scanner service with fresh executor"""
-    global _scanner_running
+    global _scanner_running, _scanner_thread, _scanner_instance
     if _scanner_running:
         stop_scanning(db)
+        time.sleep(1)  # Wait for shutdown
     
-    from services.scanner import get_scanner
-    scanner = get_scanner()
-    scanner.restart()
+    # Create completely new ScannerService instance
+    from services.scanner import ScannerService
+    _scanner_instance = ScannerService(max_workers=10)
+    
+    def run_scanner():
+        global _scanner_running
+        try:
+            _scanner_instance.run()
+        finally:
+            _scanner_running = False
+
+    _scanner_thread = threading.Thread(target=run_scanner, daemon=True)
+    _scanner_thread.start()
     _scanner_running = True
     
     return {"message": "Scanner service restarted", "scanner_running": True}
@@ -95,20 +113,30 @@ def restart_scanning(db: Session = Depends(get_db)):
 def scan_single_stock(symbol: str, db: Session = Depends(get_db)):
     """Manually trigger a scan for a single stock"""
     symbol = symbol.upper()
-    stock = db.query(Watchlist).filter(Watchlist.symbol == symbol).first()
-    if not stock or not stock.enabled:
-        raise HTTPException(status_code=400, detail=f"Stock {symbol} not enabled")
+    stock = db.query(Watchlist).filter(
+        Watchlist.symbol == symbol,
+        Watchlist.enabled == True
+    ).first()
+    if not stock:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Stock {symbol} not found or disabled"
+        )
     
     log_entry = SystemLog(
         level="INFO",
         component="scanner_api",
         message=f"Manual scan triggered for {symbol}",
-        details={"triggered_by": "api"}
+        details={"symbol": symbol, "triggered_by": "api"}
     )
     db.add(log_entry)
     db.commit()
     
-    return {"message": f"Scan triggered for {symbol}", "symbol": symbol, "status": "scanning"}
+    from services.scanner import ScannerService
+    scanner = ScannerService(max_workers=10)
+    scanner.scan_single_stock(symbol)
+    
+    return {"message": f"Scan triggered for {symbol}", "symbol": symbol}
 
 
 @router.get("/config")

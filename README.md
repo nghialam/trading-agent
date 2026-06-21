@@ -167,11 +167,11 @@ sudo systemctl status trading-scanner
 ### 3. Start FastAPI Backend
 
 ```bash
-# Run API server on port 8000
-uvicorn api.main:app --reload --port 8000
+# Run API server on port 8200
+uvicorn api.main:app --reload --port 8200
 
 # Production mode with multiple workers
-uvicorn api.main:app --workers 4 --host 0.0.0.0 --port 8000
+uvicorn api.main:app --workers 4 --host 0.0.0.0 --port 8200
 ```
 
 ### 4. Launch Streamlit Dashboard

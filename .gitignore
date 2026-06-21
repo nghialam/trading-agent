@@ -1,10 +1,32 @@
+# Python
 venv/
+.pyenv/
 __pycache__/
 *.pyc
+*.pyo
 *.egg-info/
 dist/
 build/
+
+# Logs & Data
 logs/
 data/cache/
+*.log
+
+# Environment
 .env
+.env.*
+
+# OS
 .DS_Store
+*.localized/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Backups
+*.bak
+*.orig

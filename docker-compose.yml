@@ -23,9 +23,9 @@ services:
   api:
     build: .
     container_name: trading-api
-    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --workers 2
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8200 --workers 2
     ports:
-      - "8000:8000"
+      - "8200:8200"
     environment:
       DATABASE_URL: postgresql://${DB_USER:-trading_user}:${DB_PASS:-trading_pass}@postgres:5432/${DB_NAME:-trading_agent}
     depends_on:

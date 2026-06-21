@@ -1,10 +1,10 @@
 # Daily Maintenance Checklist
 
-- [ ] Check scanner status: `curl http://localhost:8000/api/scanner/status`
+- [ ] Check scanner status: `curl http://localhost:8200/api/scanner/status`
 - [ ] Verify scanner is running: `"scanner_running": true`
 - [ ] Check signal count is increasing: `"signals_last_hour" > 0`
 - [ ] Monitor error count: `"errors_last_hour" == 0`
-- [ ] Review system logs: `curl 'http://localhost:8000/api/scanner/logs?limit=10'`
+- [ ] Review system logs: `curl 'http://localhost:8200/api/scanner/logs?limit=10'`
 - [ ] Verify database connectivity: Check PostgreSQL is responding
 
 # Weekly Maintenance Checklist

@@ -2,8 +2,9 @@
 
 ## Autonomous Trading Agent - Scalable 24/7 System
 
-**Version:** 2.0.0  
-**Date:** 2026-06-15  
+**Version:** 2.1.0  
+**Date:** 2026-06-21  
+**Changelog:** Added restart endpoint, updated scanner methods, added signal deduplication docs
 
 ---
 
@@ -550,7 +551,21 @@ def __init__(self, max_workers: int = 10)
 | `config` | `Dict[str, str]` | Runtime configuration |
 | `_lock` | `threading.Lock` | Thread safety lock |
 
-#### Methods
+#### Methods (v2.1)
+
+##### `_get_recent_signal_type(symbol: str, minutes: int = 5) -> Optional[str]`
+
+Get the last signal type for a symbol within a time window to prevent duplicates.
+
+**Parameters**:
+| Name | Type | Description |
+|------|------|-------------|
+| `symbol` | `str` | Stock symbol |
+| `minutes` | `int` | Time window in minutes (default: 5) |
+
+**Returns**: `Optional[str]` - Signal type if found, None otherwise
+
+**Purpose**: Prevents duplicate signals for the same stock within a short time window.
 
 ##### `load_watchlist(db_session) -> List[Watchlist]`
 
@@ -576,7 +591,7 @@ Load scanner configuration from database.
 
 ##### `reload_config()`
 
-Reload configuration from database (call periodically).
+Reload configuration from database (called every 5 minutes).
 
 ##### `scan_stock(stock: Watchlist)`
 
@@ -588,27 +603,37 @@ Scan a single stock and generate signals. Runs in separate thread for parallel p
 | `stock` | `Watchlist` | Stock to scan |
 
 **Workflow**:
-1. Fetch historical data from vnstock API
-2. Compute technical indicators (RSI, MACD)
-3. Evaluate signals based on indicator values
-4. Save generated signal to database
-5. Log any errors that occur
+1. Fetch 1D historical data (90 days) from vnstock API with retry
+2. Fetch 1H historical data (5 days) for Pocket Pivot calculation
+3. Compute technical indicators (RSI, MACD) on 1D data
+4. Calculate Pocket Pivot on 1H data
+5. Generate signal based on technical indicators
+6. Check for duplicate signals (5-min window)
+7. Run LLM analysis to verify signal
+8. Save signal to database
+9. Generate daily summary (once per day)
 
-##### `_fetch_historical_data(symbol: str, days: int = 30) -> pd.DataFrame`
+##### `_fetch_historical_data(symbol: str, days: int = 90, interval: str = "1D") -> pd.DataFrame`
 
-Fetch historical OHLCV data from vnstock API.
+Fetch historical OHLCV data from vnstock API with retry logic and rate limit handling.
 
 **Parameters**:
 | Name | Type | Description |
 |------|------|-------------|
 | `symbol` | `str` | Stock symbol |
-| `days` | `int` | Number of days of history |
+| `days` | `int` | Number of days of history (default: 90) |
+| `interval` | `str` | Data interval: "1D" or "1H" |
 
 **Returns**: `pd.DataFrame` - OHLCV DataFrame or empty if failed
 
+**Error Handling**:
+- Retries up to 3 times with exponential backoff (5s, 10s, 20s)
+- Detects rate limit errors (429, RetryError, ConnectionError)
+- Adds jitter to prevent thundering herd
+
 ##### `_evaluate_signals(rsi: float, macd: float, macd_signal: float, close_price: float) -> tuple`
 
-Evaluate technical indicators to generate trading signals.
+Evaluate technical indicators to generate trading signals with improved SELL detection.
 
 **Parameters**:
 | Name | Type | Description |
@@ -620,14 +645,18 @@ Evaluate technical indicators to generate trading signals.
 
 **Returns**: `tuple` - `(signal_type: str, confidence: float)`
 
-**Signal Logic**:
-| RSI Condition | MACD Condition | Result |
-|---------------|----------------|--------|
-| < 30 (oversold) | > Signal (bullish) | **BUY** (high confidence) |
-| > 70 (overbought) | < Signal (bearish) | **SELL** (high confidence) |
-| Otherwise | Any | **HOLD** (neutral) |
+**Signal Logic (v2.1)**:
+| RSI Condition | MACD Condition | Result | Confidence |
+|---------------|----------------|--------|------------|
+| > 70 (overbought) | < Signal (bearish) | **SELL** (strong) | 0.5+ |
+| > 60 (overbought) | < Signal (bearish) | **SELL** (moderate) | 0.35+ |
+| > 45 | < Signal (bearish) | **SELL** (mild) | 0.25+ |
+| < 30 (oversold) | > Signal (bullish) | **BUY** (strong) | 0.5+ |
+| < 40 (oversold) | > Signal (bullish) | **BUY** (moderate) | 0.35+ |
+| < 55 | > Signal (bullish) | **BUY** (mild) | 0.25+ |
+| Otherwise | Any | **HOLD** | 0.0-0.3 |
 
-##### `_save_signal(symbol: str, signal_type: str, confidence_score: float, price_at_signal: float, indicators: Dict)`
+##### `_save_signal(symbol: str, signal_type: str, confidence_score: float, price_at_signal: float, indicators: Dict, llm_verdict: Optional[Dict] = None) -> Optional[int]`
 
 Save trading signal to database.
 
@@ -639,6 +668,24 @@ Save trading signal to database.
 | `confidence_score` | `float` | Signal confidence (0.0 - 1.0) |
 | `price_at_signal` | `float` | Price at signal time |
 | `indicators` | `Dict` | Technical indicator values |
+| `llm_verdict` | `Optional[Dict]` | LLM analysis result |
+
+**Returns**: `Optional[int]` - Signal ID if saved, None on failure
+
+##### `_generate_daily_summary(symbol: str, df_1d: pd.DataFrame, signal_type: str) -> bool`
+
+Generate daily price summary for a stock (once per day).
+
+**Parameters**:
+| Name | Type | Description |
+|------|------|-------------|
+| `symbol` | `str` | Stock symbol |
+| `df_1d` | `pd.DataFrame` | Daily OHLCV data |
+| `signal_type` | `str` | Latest signal type |
+
+**Returns**: `bool` - True if created, False if already exists
+
+**Unique Constraint**: `(date, symbol)` - One summary per stock per day
 
 ##### `scan_single_stock(symbol: str)`
 
@@ -651,385 +698,28 @@ Scan a single stock (for manual trigger via API).
 
 ##### `run()`
 
-Main scanner loop. Runs continuously, scanning all watchlist stocks in parallel.
+Main scanner loop. Runs continuously, scanning all watchlist stocks in parallel with enhanced error handling.
 
-**Workflow**:
-1. Reload configuration from database
+**Workflow (v2.1)**:
+1. Reload configuration from database (every 5 min)
 2. Load active watchlist
 3. Scan all stocks in parallel using ThreadPoolExecutor
-4. Wait for all scans to complete
-5. Sleep for configured interval
-6. Repeat
+4. Handle executor failures with automatic recreation
+5. Wait for all scans (with 60s timeout per scan)
+6. Log failed scans (auto-retry next cycle)
+7. Sleep for configured interval
+8. Repeat
+
+**Error Resilience**:
+- Thread failures caught and logged, never crash the loop
+- Database constraint violations handled gracefully
+- API rate limits trigger exponential backoff
 
 ##### `stop()`
 
-Stop the scanner service gracefully. Shuts down thread pool and waits for running tasks.
+Stop the scanner service gracefully. Shuts down thread pool and cancels pending futures.
 
----
+##### `restart()`
 
-### Watchlist Model
-
-**File**: `database/models.py`  
-**Table**: `watchlist`  
-
-Active stocks to monitor in the watchlist.
-
-#### Class Definition
-
-```python
-class Watchlist(Base):
-    __tablename__ = 'watchlist'
-    
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String(10), unique=True, nullable=False)
-    name = Column(Text)
-    sector = Column(String(50))
-    priority = Column(Integer, default=2)  # 1=high (VN30), 2=medium, 3=low
-    enabled = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+Restart the scanner with a fresh executor while maintaining running state.
 ```
-
-#### Columns
-
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| `id` | `Integer` | PK, auto-increment | Primary key |
-| `symbol` | `String(10)` | Unique, not null | Stock ticker symbol |
-| `name` | `Text` | - | Company name |
-| `sector` | `String(50)` | - | Industry sector |
-| `priority` | `Integer` | Default: 2 | Priority level (1=high, 2=medium, 3=low) |
-| `enabled` | `Boolean` | Default: True | Whether stock is active |
-| `created_at` | `DateTime` | Default: now | Creation timestamp |
-| `updated_at` | `DateTime` | Auto-update | Last update timestamp |
-
-#### Indexes
-
-| Index Name | Columns | Purpose |
-|-----------|---------|---------|
-| `idx_watchlist_enabled` | `enabled` | Filter active stocks |
-
----
-
-### Signal Model
-
-**File**: `database/models.py`  
-**Table**: `signal`  
-
-Generated trading signals with full metadata and indicator values.
-
-#### Class Definition
-
-```python
-class Signal(Base):
-    __tablename__ = 'signal'
-    
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String(10), nullable=False, index=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
-    signal_type = Column(String(10), nullable=False)  # BUY / SELL / HOLD
-    confidence_score = Column(Float)
-    price_at_signal = Column(Float)
-    indicators = Column(JSON)
-    metadata = Column(JSON)
-    processed = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-```
-
-#### Columns
-
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| `id` | `Integer` | PK, auto-increment | Primary key |
-| `symbol` | `String(10)` | Not null, indexed | Stock ticker symbol |
-| `timestamp` | `DateTime` | Default: now, indexed | Signal generation time |
-| `signal_type` | `String(10)` | Not null | BUY / SELL / HOLD |
-| `confidence_score` | `Float` | - | Signal confidence (0.0 - 1.0) |
-| `price_at_signal` | `Float` | - | Stock price at signal time |
-| `indicators` | `JSON` | - | Technical indicator values |
-| `metadata` | `JSON` | - | Additional context |
-| `processed` | `Boolean` | Default: False | Whether signal was acted upon |
-| `created_at` | `DateTime` | Default: now | Creation timestamp |
-
-#### Indexes
-
-| Index Name | Columns | Purpose |
-|-----------|---------|---------|
-| `idx_signal_symbol_time` | `(symbol, timestamp)` | Query by stock and date range |
-| `idx_signal_confidence` | `confidence_score` | Filter by signal strength |
-| `idx_signal_type` | `signal_type` | Filter by signal type |
-
----
-
-### PriceData Model
-
-**File**: `database/models.py`  
-**Table**: `price_data`  
-
-Historical OHLCV price data for each stock.
-
-#### Class Definition
-
-```python
-class PriceData(Base):
-    __tablename__ = 'price_data'
-    
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String(10), nullable=False, index=True)
-    timestamp = Column(DateTime, nullable=False, index=True)
-    open = Column(Float)
-    high = Column(Float)
-    low = Column(Float)
-    close = Column(Float)
-    volume = Column(BigInteger)
-```
-
-#### Columns
-
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| `id` | `Integer` | PK, auto-increment | Primary key |
-| `symbol` | `String(10)` | Not null, indexed | Stock ticker symbol |
-| `timestamp` | `DateTime` | Not null, indexed | Data point time |
-| `open` | `Float` | - | Opening price |
-| `high` | `Float` | - | Highest price |
-| `low` | `Float` | - | Lowest price |
-| `close` | `Float` | - | Closing price |
-| `volume` | `BigInteger` | - | Trading volume |
-
-#### Indexes
-
-| Index Name | Columns | Purpose |
-|-----------|---------|---------|
-| `idx_price_data_symbol_time` | `(symbol, timestamp)` | Query historical data |
-
----
-
-### SystemLog Model
-
-**File**: `database/models.py`  
-**Table**: `system_log`  
-
-Activity logging for all scanner operations.
-
-#### Class Definition
-
-```python
-class SystemLog(Base):
-    __tablename__ = 'system_log'
-    
-    id = Column(Integer, primary_key=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
-    level = Column(String(10), nullable=False)  # INFO / WARNING / ERROR / DEBUG
-    component = Column(String(50))
-    message = Column(Text)
-    details = Column(JSON)
-```
-
-#### Columns
-
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| `id` | `Integer` | PK, auto-increment | Primary key |
-| `timestamp` | `DateTime` | Default: now, indexed | Log entry time |
-| `level` | `String(10)` | Not null | INFO / WARNING / ERROR / DEBUG |
-| `component` | `String(50)` | - | Component name |
-| `message` | `Text` | - | Log message |
-| `details` | `JSON` | - | Additional context |
-
-#### Indexes
-
-| Index Name | Columns | Purpose |
-|-----------|---------|---------|
-| `idx_systemlog_timestamp` | `timestamp` | Query by date range |
-| `idx_systemlog_level` | `level` | Filter by log level |
-
----
-
-### ScannerConfig Model
-
-**File**: `database/models.py`  
-**Table**: `scanner_config`  
-
-Runtime configuration key-value store for scanner parameters.
-
-#### Class Definition
-
-```python
-class ScannerConfig(Base):
-    __tablename__ = 'scanner_config'
-    
-    id = Column(Integer, primary_key=True)
-    key = Column(String(50), unique=True, nullable=False)
-    value = Column(Text)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-```
-
-#### Columns
-
-| Column | Type | Constraints | Description |
-|--------|------|-------------|-------------|
-| `id` | `Integer` | PK, auto-increment | Primary key |
-| `key` | `String(50)` | Unique, not null | Configuration key |
-| `value` | `Text` | - | Configuration value |
-| `updated_at` | `DateTime` | Auto-update | Last update timestamp |
-
----
-
-### Database Configuration
-
-**File**: `database/config.py`  
-**Module**: `database.config`  
-
-PostgreSQL connection configuration and SQLAlchemy setup.
-
-#### Functions
-
-##### `get_engine() -> Engine`
-
-Get the database engine with connection pool.
-
-**Returns**: `Engine` - SQLAlchemy engine instance
-
-**Configuration**:
-- `pool_size`: 10 (persistent connections)
-- `max_overflow`: 20 (additional connections under load)
-- `pool_timeout`: 30 seconds
-- `pool_recycle`: 3600 seconds (1 hour)
-
-##### `get_session() -> Session`
-
-Create a new database session.
-
-**Returns**: `Session` - SQLAlchemy session instance
-
-##### `init_db()`
-
-Initialize database schema (create all tables).
-
-**Usage**:
-```python
-from database.config import init_db
-init_db()
-```
-
-##### `get_db()`
-
-FastAPI dependency injector for database sessions.
-
-**Usage**:
-```python
-from fastapi import Depends
-from database.config import get_db
-
-@app.get("/api/signals")
-def list_signals(db: Session = Depends(get_db)):
-    return db.query(Signal).all()
-```
-
----
-
-### Scanner Service Singleton
-
-**File**: `services/scanner.py`  
-**Function**: `get_scanner()`
-
-Get or create the scanner singleton instance.
-
-**Signature**:
-```python
-def get_scanner() -> ScannerService
-```
-
-**Returns**: `ScannerService` - Singleton scanner instance
-
-**Usage**:
-```python
-from services.scanner import get_scanner
-
-scanner = get_scanner()
-scanner.run()  # Start scanning
-```
-
----
-
-## API Usage Examples
-
-### Scanner Service (24/7 Operation)
-
-```python
-from services.scanner import get_scanner
-
-# Get scanner instance
-scanner = get_scanner()
-
-# Start continuous scanning
-scanner.run()
-
-# Or run in background thread
-import threading
-thread = threading.Thread(target=scanner.run, daemon=True)
-thread.start()
-
-# Stop scanning
-scanner.stop()
-```
-
-### FastAPI REST Endpoints
-
-```python
-from fastapi import FastAPI, Depends, Session
-from database.config import get_db
-from database.models import Signal
-
-app = FastAPI()
-
-@app.get("/api/signals")
-def list_signals(
-    symbol: str = None,
-    signal_type: str = None,
-    limit: int = 100,
-    db: Session = Depends(get_db)
-):
-    """List signals with optional filters"""
-    query = db.query(Signal)
-    if symbol:
-        query = query.filter(Signal.symbol == symbol)
-    if signal_type:
-        query = query.filter(Signal.signal_type == signal_type)
-    return query.order_by(Signal.timestamp.desc()).limit(limit).all()
-
-@app.post("/api/scanner/scan/{symbol}")
-def scan_stock(symbol: str, db: Session = Depends(get_db)):
-    """Manually scan a single stock"""
-    from services.scanner import get_scanner
-    scanner = get_scanner()
-    scanner.scan_single_stock(symbol)
-    return {"status": "scanned", "symbol": symbol}
-```
-
-### Streamlit Dashboard
-
-```python
-import streamlit as st
-import pandas as pd
-from database.config import SessionLocal
-from database.models import Signal, Watchlist
-
-st.title("Trading Agent Dashboard")
-
-# Load signals
-db = SessionLocal()
-signals = pd.DataFrame([s.__dict__ for s in db.query(Signal).all()])
-st.dataframe(signals)
-
-# Watchlist management
-watchlist = db.query(Watchlist).filter_by(enabled=True).all()
-for stock in watchlist:
-    st.write(f"{stock.symbol} - {stock.name}")
-```
-
----
-
-**Version:** 2.0.0  
-**Last Updated:** 2026-06-15

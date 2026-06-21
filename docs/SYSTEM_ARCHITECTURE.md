@@ -2,9 +2,10 @@
 
 ## Autonomous Trading Agent - Scalable 24/7 System
 
-**Version:** 2.0.0  
-**Date:** 2026-06-15  
-**Author:** Nghia Lam
+**Version:** 2.1.0  
+**Date:** 2026-06-21  
+**Author:** Nghia Lam  
+**Changelog:** Fixed scanner stability, added signal deduplication, enhanced error handling
 
 ---
 
@@ -236,18 +237,95 @@ Runtime configuration key-value store.
 | GET | `/api/scanner/status` | Get scanner running status |
 | POST | `/api/scanner/start` | Start scanning service |
 | POST | `/api/scanner/stop` | Stop scanning service |
-| POST | `/api/scanner/scan/{symbol}` | Scan single stock manually |
+| POST | `/api/scanner/restart` | Restart scanner with fresh executor |
+| POST | `/api/scanner/scan/{symbol}` | Manually scan single stock |
+| GET | `/api/scanner/config` | Get scanner configuration |
+| PUT | `/api/scanner/config` | Update scanner configuration |
+| GET | `/api/scanner/logs` | Get scanner activity logs |
 
-### Component 4: Streamlit Dashboard (`dashboard/`)
+### DailySummary Table
 
-**Purpose**: Web-based management dashboard for monitoring signals, managing watchlist, and viewing analytics.
+Stores daily price summaries for each stock.
 
-**Features**:
-- Real-time signal monitoring with filtering and sorting
-- Watchlist management (add/remove/modify stocks)
-- Signal history browser with date range filters
-- Analytics dashboard with signal performance metrics
-- Scanner control panel (start/stop/restart)
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | Primary key |
+| date | TIMESTAMP | Date of summary (midnight) |
+| symbol | VARCHAR(20) | Stock ticker |
+| summary_text | TEXT | Human-readable summary |
+| notable_events | JSON | Array of notable events |
+| trading_notes | TEXT | Trading recommendations |
+| market_conditions | JSON | Market trend analysis |
+| volume_analysis | JSON | Volume statistics |
+
+**Unique Constraint**: `(date, symbol)` - One summary per stock per day.
+
+### Signal Reviews Table
+
+Stores curated reviews for position changes (BUY/SELL transitions).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | Primary key |
+| signal_id | INTEGER FK | Reference to Signal |
+| symbol | VARCHAR(20) | Stock ticker |
+| previous_signal | VARCHAR(10) | Previous signal type |
+| current_signal | VARCHAR(10) | New signal type |
+| is_position_change | BOOLEAN | Always true for reviews |
+| llm_analysis | JSON | Full LLM analysis |
+| llm_verdict | VARCHAR(20) | QUALIFIED/WEAK/FAKE |
+| llm_confidence | FLOAT | LLM confidence score |
+| analysis_notes | TEXT | Human-readable notes |
+
+### Pocket Pivot Data Table
+
+Stores Pocket Pivot indicator calculations from 1H timeframe data.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | SERIAL PK | Primary key |
+| symbol | VARCHAR(20) | Stock ticker |
+| timestamp | TIMESTAMP | Calculation time |
+| pivot_type | VARCHAR(20) | NONE/BULLISH/BEARISH |
+| pivot_price | FLOAT | Price at pivot |
+| volume_ratio | FLOAT | Volume ratio vs average |
+| is_valid | BOOLEAN | Whether pivot is valid |
+| previous_high | FLOAT | Previous period high |
+| previous_low | FLOAT | Previous period low |
+| context_data | JSON | Additional context |
+
+### Scanner Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `scan_interval` | 30s | Default scan interval between cycles |
+| `high_priority_interval` | 10s | Scan interval for VN30 stocks (deprecated) |
+| `low_priority_interval` | 60s | Scan interval for other stocks (deprecated) |
+| `max_workers` | 10 | Thread pool size for parallel scanning |
+| `api_retry_attempts` | 3 | Retry attempts for vnstock API calls |
+| `api_retry_delay` | 5s | Base delay for API retries (exponential backoff) |
+| `dedup_window` | 5min | Signal deduplication window |
+
+### Error Handling Strategy
+
+The scanner implements robust error handling at multiple levels:
+
+1. **API Level**: vnstock API calls retry 3 times with exponential backoff (5s, 10s, 20s)
+2. **Thread Level**: Individual scan failures are caught and logged, next cycle retries
+3. **Database Level**: Transaction rollbacks on constraint violations, graceful degradation
+4. **Executor Level**: Automatic executor recreation if `RuntimeError` occurs
+5. **Loop Level**: Scanner loop continues on any exception, sleeps 10s before retry
+
+```python
+# Example: Thread-safe scan execution
+for stock in self.watchlist:
+    try:
+        future = executor.submit(self.scan_stock, stock)
+        futures.append(future)
+    except RuntimeError:
+        # Recreate executor and retry
+        self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
+```
 
 ## 4. Pipeline Stages
 
@@ -378,7 +456,7 @@ python -c "from database.config import init_db; init_db()"
 python -c "from services.scanner import get_scanner; get_scanner().run()"
 
 # Terminal 4: Start FastAPI backend
-uvicorn api.main:app --reload --port 8000
+uvicorn api.main:app --reload --port 8200
 
 # Terminal 5: Launch Streamlit dashboard
 streamlit run dashboard/app.py --server.port 8501
@@ -456,5 +534,5 @@ All scanner activities are logged to both console and the `SystemLog` table:
 
 ---
 
-**Version:** 2.0.0  
-**Last Updated:** 2026-06-15
+**Version:** 2.1.0  
+**Last Updated:** 2026-06-21

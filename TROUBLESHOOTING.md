@@ -5,9 +5,9 @@
 ### Issue 1: Scanner Not Generating Signals
 **Symptoms**: `signals_last_hour` is 0, scanner shows `"scanner_running": false`
 **Steps**:
-1. Check scanner status: `curl http://localhost:8000/api/scanner/status`
-2. Start scanner: `curl -X POST http://localhost:8000/api/scanner/start`
-3. Check system logs: `curl 'http://localhost:8000/api/scanner/logs?limit=20'`
+1. Check scanner status: `curl http://localhost:8200/api/scanner/status`
+2. Start scanner: `curl -X POST http://localhost:8200/api/scanner/start`
+3. Check system logs: `curl 'http://localhost:8200/api/scanner/logs?limit=20'`
 4. Verify PostgreSQL is running: `psql -U trading_user -d trading_agent -c "SELECT count(*) FROM signals;"`
 
 ### Issue 2: Database Connection Failed
@@ -24,14 +24,14 @@
 1. Test vnstock connectivity manually in Python REPL
 2. Check if symbol is valid Vietnamese stock ticker
 3. Verify internet connection and DNS resolution
-4. Retry scan: `curl -X POST http://localhost:8000/api/scanner/scan/{SYMBOL}`
+4. Retry scan: `curl -X POST http://localhost:8200/api/scanner/scan/{SYMBOL}`
 
 ### Issue 4: FastAPI Server Not Responding
-**Symptoms**: Connection refused on port 8000
+**Symptoms**: Connection refused on port 8200
 **Steps**:
 1. Check if process is running: `ps aux | grep uvicorn`
-2. Restart server: `pkill -9 -f uvicorn && sleep 2 && uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload &`
-3. Verify health check: `curl http://localhost:8000/api/health`
+2. Restart server: `pkill -9 -f uvicorn && sleep 2 && uvicorn api.main:app --host 0.0.0.0 --port 8200 --reload &`
+3. Verify health check: `curl http://localhost:8200/api/health`
 
 ### Issue 5: Streamlit Dashboard Not Loading
 **Symptoms**: Connection refused on port 8501 or blank page
@@ -45,17 +45,17 @@
 **Steps**:
 1. This was fixed in _save_signal() with numpy type conversion
 2. Verify fix is applied: Check services/scanner.py for type conversion code
-3. Test signal save: `curl -X POST http://localhost:8000/api/scanner/scan/VNM`
+3. Test signal save: `curl -X POST http://localhost:8200/api/scanner/scan/VNM`
 
 ## Monitoring Commands
 
 ### Quick System Health Check
 ```bash
 # API Health
-curl http://localhost:8000/api/health
+curl http://localhost:8200/api/health
 
 # Scanner Status
-curl http://localhost:8000/api/scanner/status
+curl http://localhost:8200/api/scanner/status
 
 # Database Signal Count
 psql -U trading_user -d trading_agent -c "SELECT count(*), signal_type FROM signals GROUP BY signal_type;"
@@ -67,10 +67,10 @@ ps aux | grep -E "(uvicorn|streamlit)" | grep -v grep
 ### Log Monitoring
 ```bash
 # View recent system logs
-curl 'http://localhost:8000/api/scanner/logs?limit=50&level=ERROR'
+curl 'http://localhost:8200/api/scanner/logs?limit=50&level=ERROR'
 
 # Monitor scanner in real-time
-watch -n 5 'curl -s http://localhost:8000/api/scanner/status | python -m json.tool'
+watch -n 5 'curl -s http://localhost:8200/api/scanner/status | python -m json.tool'
 ```
 
 ### Performance Metrics
@@ -101,14 +101,14 @@ pkill -9 -f streamlit
 sleep 3
 
 # Start API server
-uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload &
+uvicorn api.main:app --host 0.0.0.0 --port 8200 --reload &
 
 # Start dashboard
 streamlit run dashboard/app.py --server.port 8501 --server.headless true --runner.magicEnabled false &
 
 # Verify all services
 sleep 5
-curl http://localhost:8000/api/health
+curl http://localhost:8200/api/health
 curl -s -o /dev/null -w "%{http_code}" http://localhost:8501/
 ```
 

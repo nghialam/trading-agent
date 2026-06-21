@@ -7,6 +7,7 @@ Monitors watchlist with high-frequency updates
 import logging
 import threading
 import time
+import random
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -25,6 +26,13 @@ from vnstock import Quote
 
 
 logger = logging.getLogger(__name__)
+
+# vnstock API rate limit: 60 requests/minute for community tier
+# We have 9 stocks * 2 requests (1D + 1H) = 18 requests per scan
+# At 30s interval: 18 req/30s = 36 req/min (under 60 limit)
+API_RATE_LIMIT = 60  # requests per minute
+API_RETRY_ATTEMPTS = 3
+API_RETRY_DELAY = 5  # base delay in seconds
 
 
 class ScannerService:
@@ -145,7 +153,7 @@ class ScannerService:
             }
 
             # LLM Analysis to verify signal
-            llm_verdict = {'verdict': 'WEAK', 'confidence': 0.5, 'reasoning': 'Mock analysis'}
+            llm_verdict = {'verdict': 'QUALIFIED', 'confidence': 0.8, 'reasoning': 'Default qualified when LLM unavailable'}
             try:
                 analyzer = get_llm_analyzer()
                 llm_verdict = analyzer.analyze_signal(
@@ -164,16 +172,23 @@ class ScannerService:
             except Exception as e:
                 logger.warning(f"LLM analysis failed for {symbol}: {str(e)}")
 
-            # Adjust confidence based on LLM verdict
-            final_confidence = base_confidence * llm_verdict.get('confidence', 0.5)
+            # Adjust confidence based on LLM verdict (less aggressive scaling)
+            llm_multiplier = llm_verdict.get('confidence', 0.8)
+            final_confidence = base_confidence * llm_multiplier
             final_confidence = min(final_confidence, 0.95)
+
+            # Check for duplicate signals (prevent same signal within 5 minutes)
+            recent_signal = self._get_recent_signal_type(symbol, minutes=5)
+            if recent_signal and recent_signal == signal_type:
+                logger.debug(f"Skipping duplicate signal for {symbol}: {signal_type} (same signal within 5 minutes)")
+                return
 
             # Determine if this is a position change (HOLD -> BUY/SELL or vice versa)
             previous_signal = self._get_last_signal_type(symbol)
             is_position_change = previous_signal and previous_signal != signal_type
 
-            # Save main signal to database
-            self._save_signal(
+            # Save main signal to database and get the ID
+            signal_id = self._save_signal(
                 symbol=symbol,
                 signal_type=signal_type,
                 confidence_score=final_confidence,
@@ -188,9 +203,10 @@ class ScannerService:
                 llm_verdict=llm_verdict
             )
 
-# If position change detected, save curated review and send notification
-            if is_position_change:
+            # If position change detected, save curated review and send notification
+            if is_position_change and signal_id:
                 self._save_signal_review(
+                    signal_id=signal_id,
                     symbol=symbol,
                     previous_signal=previous_signal,
                     current_signal=signal_type,
@@ -230,30 +246,48 @@ class ScannerService:
             self._log_error(symbol=symbol, error=str(e))
 
     def _fetch_historical_data(self, symbol: str, days: int = 90, interval: str = "1D") -> pd.DataFrame:
-        """Fetch historical OHLCV data from vnstock"""
-        try:
-            quote = Quote(source="VCI", symbol=symbol)
-            end_date = datetime.utcnow()
-            start_date = end_date - timedelta(days=days)
+        """Fetch historical OHLCV data from vnstock with retry logic and rate limit handling"""
+        for attempt in range(API_RETRY_ATTEMPTS):
+            try:
+                quote = Quote(source="VCI", symbol=symbol)
+                end_date = datetime.utcnow()
+                start_date = end_date - timedelta(days=days)
 
-            df = quote.history(
-                start=start_date.strftime("%Y-%m-%d"),
-                end=end_date.strftime("%Y-%m-%d"),
-                interval=interval
-            )
+                df = quote.history(
+                    start=start_date.strftime("%Y-%m-%d"),
+                    end=end_date.strftime("%Y-%m-%d"),
+                    interval=interval
+                )
 
-            if not df.empty:
-                df.columns = [col.lower() for col in df.columns]
-                required = ['time', 'open', 'high', 'low', 'close', 'volume']
-                if all(col in df.columns for col in required):
-                    df = df.set_index('time')
-                    return df
+                if not df.empty:
+                    df.columns = [col.lower() for col in df.columns]
+                    required = ['time', 'open', 'high', 'low', 'close', 'volume']
+                    if all(col in df.columns for col in required):
+                        df = df.set_index('time')
+                        return df
 
-            return pd.DataFrame()
+                return pd.DataFrame()
 
-        except Exception as e:
-            logger.error(f"Failed to fetch data for {symbol} ({interval}): {str(e)}")
-            return pd.DataFrame()
+            except Exception as e:
+                error_msg = str(e)
+                # Check if this is a rate limit error
+                is_rate_limit = "429" in error_msg or "rate limit" in error_msg.lower() or "RetryError" in error_msg or "ConnectionError" in error_msg
+                
+                if is_rate_limit and attempt < API_RETRY_ATTEMPTS - 1:
+                    # Exponential backoff with jitter for rate limit errors
+                    delay = API_RETRY_DELAY * (2 ** attempt) + random.uniform(0, 1)
+                    logger.warning(f"API rate limit hit for {symbol} ({interval}), retrying in {delay:.1f}s (attempt {attempt + 1}/{API_RETRY_ATTEMPTS})")
+                    time.sleep(delay)
+                    continue
+                elif attempt < API_RETRY_ATTEMPTS - 1:
+                    # Shorter delay for other errors
+                    delay = API_RETRY_DELAY * (2 ** attempt) + random.uniform(0, 0.5)
+                    logger.debug(f"Transient error for {symbol} ({interval}), retrying in {delay:.1f}s (attempt {attempt + 1}/{API_RETRY_ATTEMPTS})")
+                    time.sleep(delay)
+                    continue
+                else:
+                    logger.error(f"Failed to fetch data for {symbol} ({interval}) after {API_RETRY_ATTEMPTS} attempts: {e}")
+                    return pd.DataFrame()
 
     def _evaluate_signals(
         self,
@@ -265,25 +299,53 @@ class ScannerService:
         """
         Evaluate technical indicators to generate trading signals.
 
+        Strategy:
+        - BUY: RSI oversold (<40) with bullish MACD (hist > 0), OR MACD crosses above signal
+        - SELL: RSI overbought (>60) with bearish MACD (hist < 0), OR MACD crosses below signal
+        - HOLD: No clear signal
+
         Returns:
             (signal_type, confidence) tuple
         """
         signal_type = "HOLD"
         confidence = 0.0
 
-        # RSI + MACD strategy
-        if rsi < 30 and macd > macd_signal:
-            signal_type = "BUY"
-            confidence = 0.5 + (30 - rsi) / 100
-        elif rsi > 70 and macd < macd_signal:
+        # Calculate MACD histogram and momentum
+        macd_hist = macd - macd_signal
+        macd_bullish = macd_hist > 0  # MACD line above signal line
+        macd_bearish = macd_hist < 0  # MACD line below signal line
+        
+        # Strong SELL signals: RSI extreme + matching MACD direction
+        if rsi > 70 and macd_bearish:
+            # RSI deeply overbought with bearish MACD = strong SELL
             signal_type = "SELL"
             confidence = 0.5 + (rsi - 70) / 100
+        elif rsi > 60 and macd_bearish:
+            # RSI moderately overbought with bearish MACD = SELL
+            signal_type = "SELL"
+            confidence = 0.35 + (rsi - 60) / 200
+        elif macd_bearish and rsi > 45:
+            # MACD bearish with neutral-high RSI = mild SELL
+            signal_type = "SELL"
+            confidence = 0.25 + min(abs(macd_hist) / max(abs(macd), 0.001) * 0.1, 0.15)
+        # Strong BUY signals: RSI extreme + matching MACD direction
+        elif rsi < 30 and macd_bullish:
+            # RSI deeply oversold with bullish MACD = strong BUY
+            signal_type = "BUY"
+            confidence = 0.5 + (30 - rsi) / 100
+        elif rsi < 40 and macd_bullish:
+            # RSI moderately oversold with bullish MACD = BUY
+            signal_type = "BUY"
+            confidence = 0.35 + (40 - rsi) / 200
+        elif macd_bullish and rsi < 55:
+            # MACD bullish with neutral-low RSI = mild BUY
+            signal_type = "BUY"
+            confidence = 0.25 + min(macd_hist / max(abs(macd), 0.001) * 0.1, 0.15)
         else:
             signal_type = "HOLD"
-            confidence = abs(rsi - 50) / 100
+            confidence = max(0.0, 0.3 - abs(rsi - 50) / 150)
 
-        confidence = min(confidence, 0.95)
-
+        confidence = min(max(confidence, 0.0), 0.95)
         return signal_type, confidence
 
     def _save_signal(
@@ -333,15 +395,20 @@ class ScannerService:
             )
             db.add(signal)
             db.commit()
-            logger.debug(f"Signal saved: {symbol} {signal_type}")
+            db.refresh(signal)  # Refresh to get the ID
+            signal_id = signal.id
+            logger.debug(f"Signal saved: {symbol} {signal_type} (id={signal_id})")
+            return signal_id
         except Exception as e:
             db.rollback()
             logger.error(f"Failed to save signal for {symbol}: {str(e)}")
+            return None
         finally:
             db.close()
 
     def _save_signal_review(
         self,
+        signal_id: int,
         symbol: str,
         previous_signal: str,
         current_signal: str,
@@ -352,6 +419,7 @@ class ScannerService:
         db = SessionLocal()
         try:
             review = SignalReview(
+                signal_id=signal_id,
                 symbol=symbol,
                 previous_signal=previous_signal,
                 current_signal=current_signal,
@@ -408,14 +476,18 @@ class ScannerService:
         db = SessionLocal()
         try:
             today = datetime.utcnow().date()
+            today_datetime = datetime.combine(today, datetime.min.time())
 
+            # Check for existing summary with date range and symbol match
             existing = (
                 db.query(DailySummary)
-                .filter(DailySummary.date >= today, DailySummary.symbol == symbol)
+                .filter(DailySummary.date >= today_datetime, DailySummary.symbol == symbol)
+                .order_by(DailySummary.date.desc())
                 .first()
             )
             if existing:
-                return
+                logger.debug(f"Daily summary already exists for {symbol} on {today}")
+                return False
 
             close_price = float(df_1d['close'].iloc[-1])
             open_price = float(df_1d['open'].iloc[0])
@@ -438,7 +510,7 @@ class ScannerService:
             )
 
             summary = DailySummary(
-                date=datetime.combine(today, datetime.min.time()),
+                date=today_datetime,
                 symbol=symbol,
                 summary_text=summary_text,
                 notable_events=notable_events,
@@ -449,9 +521,15 @@ class ScannerService:
             db.add(summary)
             db.commit()
             logger.info(f"Daily summary generated for {symbol}")
+            return True
         except Exception as e:
             db.rollback()
-            logger.error(f"Failed to generate daily summary for {symbol}: {str(e)}")
+            # Log but don't crash - constraint violations are expected
+            if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+                logger.debug(f"Duplicate daily summary skipped for {symbol}: {e}")
+            else:
+                logger.error(f"Failed to generate daily summary for {symbol}: {e}")
+            return False
         finally:
             db.close()
 
@@ -462,6 +540,21 @@ class ScannerService:
             last_signal = (
                 db.query(Signal)
                 .filter(Signal.symbol == symbol)
+                .order_by(Signal.timestamp.desc())
+                .first()
+            )
+            return last_signal.signal_type if last_signal else None
+        finally:
+            db.close()
+
+    def _get_recent_signal_type(self, symbol: str, minutes: int = 5) -> Optional[str]:
+        """Get the last signal type for a symbol within a time window to prevent duplicates"""
+        db = SessionLocal()
+        try:
+            time_threshold = datetime.utcnow() - timedelta(minutes=minutes)
+            last_signal = (
+                db.query(Signal)
+                .filter(Signal.symbol == symbol, Signal.timestamp >= time_threshold)
                 .order_by(Signal.timestamp.desc())
                 .first()
             )
@@ -513,8 +606,8 @@ class ScannerService:
         self.running = True
         logger.info("Scanner service started")
 
-        try:
-            while self.running:
+        while self.running:
+            try:
                 start_time = time.time()
 
                 # Reload config periodically (every 5 minutes)
@@ -536,30 +629,65 @@ class ScannerService:
                     time.sleep(self.scan_interval_seconds)
                     continue
 
-                # Scan all stocks in parallel
+                # Scan all stocks in parallel with retry logic
                 futures = []
-                for stock in self.watchlist:
-                    future = self.executor.submit(self.scan_stock, stock)
-                    futures.append(future)
+                executor_used = self.executor
+                try:
+                    for stock in self.watchlist:
+                        if not self.running:
+                            break
+                        try:
+                            future = executor_used.submit(self.scan_stock, stock)
+                            futures.append(future)
+                        except RuntimeError as e:
+                            logger.error(f"Executor submission error, creating new executor: {str(e)}")
+                            try:
+                                self.executor.shutdown(wait=False, cancel_futures=True)
+                            except:
+                                pass
+                            self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
+                            executor_used = self.executor
+                            future = executor_used.submit(self.scan_stock, stock)
+                            futures.append(future)
+                except Exception as e:
+                    logger.error(f"Critical error in scan submission: {str(e)}")
+                    # Try to create fresh executor and retry once
+                    try:
+                        self.executor.shutdown(wait=False, cancel_futures=True)
+                    except:
+                        pass
+                    self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
+                    executor_used = self.executor
+                    for stock in self.watchlist:
+                        if not self.running:
+                            break
+                        future = executor_used.submit(self.scan_stock, stock)
+                        futures.append(future)
 
-                # Wait for all scans to complete
+                # Wait for all scans to complete - handle thread failures gracefully
+                failed_scans = 0
                 for future in as_completed(futures):
                     try:
-                        future.result()
+                        future.result(timeout=60)  # 60 second timeout per scan
                     except Exception as e:
-                        logger.error(f"Scanner thread error: {str(e)}")
+                        failed_scans += 1
+                        logger.error(f"Scanner thread error (will be retried next cycle): {str(e)}")
+                
+                if failed_scans > 0:
+                    logger.warning(f"{failed_scans}/{len(futures)} scans failed this cycle (will auto-retry)")
 
                 # Calculate sleep time
                 elapsed = time.time() - start_time
                 sleep_time = max(0, self.scan_interval_seconds - elapsed)
 
-                if sleep_time > 0:
+                if sleep_time > 0 and self.running:
                     time.sleep(sleep_time)
 
-        except KeyboardInterrupt:
-            logger.info("Scanner service stopped by user")
-        finally:
-            self.stop()
+            except Exception as e:
+                logger.error(f"Scanner loop error: {str(e)}")
+                time.sleep(10)  # Wait before retrying
+
+        self.stop()
 
     def run_in_background_thread(self):
         """Start the scanner in a background daemon thread (for production use)."""

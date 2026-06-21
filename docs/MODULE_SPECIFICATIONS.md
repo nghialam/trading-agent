@@ -2,8 +2,9 @@
 
 ## Autonomous Trading Agent - Scalable 24/7 System
 
-**Version:** 2.0.0  
-**Date:** 2026-06-15  
+**Version:** 2.1.0  
+**Date:** 2026-06-21  
+**Changelog:** Fixed scanner stability issues, added signal deduplication, improved SELL signal detection, enhanced API rate limit handling
 
 ---
 
@@ -666,163 +667,64 @@ run() loop:
      │
      ├─► For each stock in watchlist:
      │       └─► scan_stock(stock)          # Parallel execution
-     │               ├─► _fetch_historical_data()   # vnstock API
+     │               ├─► _fetch_historical_data()   # vnstock API with retry
      │               ├─► Compute indicators (RSI, MACD)
+     │               ├─► Check signal deduplication (5-min window)
      │               ├─► _evaluate_signals()         # Generate signal
      │               └─► _save_signal()                # Persist to DB
      │
-     ├─► Wait for all scans to complete
+     ├─► Wait for all scans to complete (with timeout)
+     ├─► Log failed scans (auto-retry next cycle)
      ├─► Sleep for scan_interval
      └─► Repeat
 ```
 
-#### Error Handling
-- **Connection Errors**: Logged to SystemLog, scanner continues
-- **Calculation Failures**: Logged with symbol details, next stock scanned
-- **Database Errors**: Transaction rollback, retry on next cycle
-- **Graceful Shutdown**: ThreadPoolExecutor waits for running tasks
+#### Enhanced Error Handling (v2.1)
+- **API Rate Limiting**: Exponential backoff with jitter (5s, 10s, 20s)
+- **Connection Errors**: 3 retry attempts per symbol before skipping
+- **Thread Failures**: Logged and retried in next scan cycle (no crash)
+- **Database Errors**: Transaction rollback with graceful degradation
+- **Duplicate Prevention**: Skips same signal within 5-minute window
+- **Graceful Shutdown**: ThreadPoolExecutor cancels pending futures
+
+#### Signal Deduplication
+Prevents duplicate signals for the same stock within a 5-minute window:
+```python
+def _get_recent_signal_type(symbol, minutes=5) -> Optional[str]:
+    """Check for recent signals to prevent duplicates"""
+    time_threshold = datetime.utcnow() - timedelta(minutes=minutes)
+    last_signal = db.query(Signal).filter(
+        Signal.symbol == symbol,
+        Signal.timestamp >= time_threshold
+    ).order_by(Signal.timestamp.desc()).first()
+    return last_signal.signal_type if last_signal else None
+```
+
+#### Improved Signal Logic (v2.1)
+- **SELL signals**: Now generated when RSI > 60 with bearish MACD (previously rare)
+- **BUY signals**: Generated when RSI < 40 with bullish MACD
+- **Balanced thresholds**: 70/30 for strong signals, 60/40 for moderate
+- **Confidence scaling**: Based on MACD histogram strength
+
+#### API Rate Limit Handling
+```python
+API_RATE_LIMIT = 60  # requests/minute (vnstock community tier)
+API_RETRY_ATTEMPTS = 3
+API_RETRY_DELAY = 5  # base delay in seconds
+
+def _fetch_historical_data(symbol, days=90, interval="1D"):
+    for attempt in range(API_RETRY_ATTEMPTS):
+        try:
+            # Fetch data with exponential backoff on rate limit
+            return quote.history(...)
+        except Exception as e:
+            if "rate limit" in str(e).lower():
+                delay = API_RETRY_DELAY * (2 ** attempt) + random.uniform(0, 1)
+                time.sleep(delay)  # Exponential backoff with jitter
+```
 
 ### Singleton Pattern
-
-```python
-def get_scanner() -> ScannerService:
-    """Get or create scanner singleton"""
-    global scanner_instance
-    if scanner_instance is None:
-        scanner_instance = ScannerService()
-    return scanner_instance
-```
-
-### Design Patterns Used
-- **Thread Pool Pattern**: Parallel stock scanning
-- **Singleton Pattern**: Single scanner instance
-- **Observer Pattern**: Configuration reload triggers update
-- **Circuit Breaker Pattern**: Error recovery for API calls
-
----
-
-## 11. Module: `api` (FastAPI) (v2.0)
-
-### Purpose
-RESTful API backend for signal CRUD operations, watchlist management, and scanner control.
-
-### Dependencies
-- `fastapi` (web framework)
-- `pydantic` (request/response validation)
-- `sqlalchemy` (database access)
-- `database.models` (ORM models)
-- `services.scanner` (scanner control)
-
-### API Endpoints Overview
-
-#### Signals
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/signals` | List all signals (with filters) |
-| GET | `/api/signals/{id}` | Get signal details |
-| POST | `/api/signals` | Create new signal (manual) |
-| DELETE | `/api/signals/{id}` | Delete signal |
-
-#### Watchlist
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/watchlist` | List all watchlist stocks |
-| POST | `/api/watchlist` | Add stock to watchlist |
-| PUT | `/api/watchlist/{id}` | Update stock config |
-| DELETE | `/api/watchlist/{id}` | Remove from watchlist |
-
-#### Scanner
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/scanner/status` | Get scanner status |
-| POST | `/api/scanner/start` | Start scanning |
-| POST | `/api/scanner/stop` | Stop scanning |
-| POST | `/api/scanner/scan/{symbol}` | Scan single stock |
-
-### Design Patterns Used
-- **RESTful Pattern**: Resource-oriented URLs
-- **Dependency Injection**: Database sessions via FastAPI Depends
-- **Validation Pattern**: Pydantic models for request/response
-- **CORS Pattern**: Cross-origin support for frontend
-
----
-
-## 12. Module: `dashboard` (Streamlit) (v2.0)
-
-### Purpose
-Web-based management dashboard for monitoring signals, managing watchlist, and viewing analytics.
-
-### Dependencies
-- `streamlit` (web framework)
-- `pandas` (data manipulation)
-- `plotly` (interactive charts)
-- `database.config` (database access)
-- `database.models` (ORM models)
-- `api` (REST API calls, optional)
-
-### Dashboard Features
-
-#### Signal Monitoring
-- Real-time signal feed with auto-refresh
-- Filter by symbol, date range, signal type, confidence
-- Sort by timestamp, confidence score, price
-- Detailed signal view with indicator values
-
-#### Watchlist Management
-- View all watchlist stocks
-- Add/remove stocks from watchlist
-- Edit stock configuration (name, sector, priority)
-- Enable/disable stocks without deletion
-
-#### Analytics Dashboard
-- Signal performance over time
-- Win/loss ratio by symbol
-- Confidence distribution histogram
-- Signal frequency by type (BUY/SELL/HOLD)
-
-#### Scanner Control
-- View scanner status (running/stopped)
-- Start/stop scanner service
-- Trigger manual scan for single stock
-- View scanner logs and errors
-
-### Design Patterns Used
-- **Page Layout Pattern**: Multi-page navigation
-- **State Management Pattern**: Session state for filters
-- **Auto-Refresh Pattern**: Periodic data reload
-- **Responsive Layout Pattern**: Adaptive grid components
-
----
-
-## System Integration Overview
-
-```
-┌──────────────┐         ┌──────────────┐         ┌──────────────┐
-│ Streamlit      │◀──────▶│ FastAPI        │◀──────▶│ PostgreSQL      │
-│ Dashboard      │         │ Backend API    │         │ Database        │
-└──────────────┘         └──────────────┘         └──────────────┘
-                                  ▲
-                                  │
-                          ┌──────────────┐
-                          │ Scanner          │
-                          │ Service          │
-                          └──────────────┘
-                                  │
-                                  ▼
-                          ┌──────────────┐
-                          │ vnstock API    │
-                          │ Market Data    │
-                          └──────────────┘
-```
-
-**Data Flow**:
-1. **Scanner Service** continuously monitors watchlist and generates signals
-2. Signals are persisted to **PostgreSQL** database
-3. **FastAPI Backend** provides REST endpoints for CRUD operations
-4. **Streamlit Dashboard** consumes API/data for real-time monitoring
-5. User interactions flow: Dashboard → FastAPI → Database/Scanner
-
----
-
-**Version:** 2.0.0  
-**Last Updated:** 2026-06-15
+````
+<userPrompt>
+Provide the fully rewritten file, incorporating the suggested code change. You must produce the complete file.
+</userPrompt>
